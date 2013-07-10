@@ -1,0 +1,1058 @@
+package falstad;
+
+import java.awt.*;
+
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
+import java.awt.event.KeyListener;
+import java.io.File;
+import java.io.IOException;
+
+import javax.swing.BorderFactory;
+import javax.swing.ButtonGroup;
+import javax.swing.JComboBox;
+import javax.swing.JFileChooser;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.JProgressBar;
+import javax.swing.JRadioButton;
+import javax.swing.JButton;
+import javax.swing.BoxLayout;
+import javax.swing.JLabel;
+import javax.swing.JSlider;
+
+
+
+/**
+ * Class handles the user interaction for the maze. 
+ * It implements a state-dependent behavior that controls the display and reacts to key board input from a user. 
+ * After refactoring the original code from an applet into a panel, it is wrapped by a MazeApplication to be a java application 
+ * and a MazeApp to be an applet for a web browser. At this point user keyboard input is first dealt with a key listener
+ * and then handed over to a Maze object by way of the keyDown method.
+ *
+ * This code is refactored code from Maze.java by Paul Falstad, www.falstad.com, Copyright (C) 1998, all rights reserved
+ * Paul Falstad granted permission to modify and use code for teaching purposes.
+ * Refactored by Peter Kemper
+ */
+// MEMO: original code: public class Maze extends Applet {
+public class Maze extends Panel { 
+	
+	/**
+	 * Initializes all of the buttons and panels used within each screen.
+	 * The loadPanel appears in the upper portion of the screen.  AllThePanels appears on the lower portion and contains several panels indicating the 
+	 * skill and type of maze within the title screen, the progress bar in the generating screen, and the map and solution buttons in the play screen.
+	 */
+	JPanel genScreen = new JPanel();
+	JButton stop = new JButton("Stop and Return to Title");
+	JPanel generatePanel = new JPanel();
+	JPanel typeMazePanel = new JPanel();
+	JPanel allThePanels = new JPanel();
+	JButton generateButton = new JButton("Generate and Play");
+	JPanel loadPanel = new JPanel();
+	JRadioButton orignialMazeButton = new JRadioButton("Original", true); 
+	JRadioButton primsMazeButton = new JRadioButton("Prim's Algorithm", false);
+	JRadioButton kruskalsMazeButton = new JRadioButton("Kruskal's Algorithm", false);
+	String[] drive = { "ManualDriver", "CuriousGambler", "Gambler", "WallFollower", "Wizard"};
+
+	//Create the combo box, select item at index 4.
+	//Indices start at 0, so 4 specifies the pig.
+	JComboBox robotdriver_select = new JComboBox(drive);
+
+	JButton loadButton  = new JButton("Load");
+	JButton saveButton = new JButton("Generate and Save");
+	JButton toggleMap = new JButton("Toggle Map");
+	JButton solution = new JButton("Show Solution");
+	JButton solveMaze = new JButton("Solve the Maze");
+	JButton terminate = new JButton("Terminate");
+	ButtonGroup radioButtons = new ButtonGroup();
+	JProgressBar progressBar = new JProgressBar();
+	JSlider difficulty = new JSlider(JSlider.HORIZONTAL, 0, 15, 4);
+	Font font = new Font("Comic Sans", Font.ITALIC, 8);
+	Font percent = new Font("Serif", Font.BOLD, 80);
+	JPanel sliderPanel = new JPanel();
+	GraphicsWrapper gw = new GraphicsWrapper();
+
+	RobotDriver mo = new ManualDriver();
+	Robot walle;
+	private Graphics gc;
+
+	Font smallBannerFont, largeBannerFont;
+	
+	static final int view_width = 650;
+	static final int view_height = 650;
+	int zscale = view_height/2;
+
+	static final int map_unit = 128;
+	static final int view_offset = map_unit/8;
+	static final int step_size = map_unit/4;
+
+	private RangeSet rset;
+
+	private Image buffer_img;
+	
+	protected int state;			// keeps track of the current GUI state, one of STATE_TITLE,...,STATE_FINISH, mainly used in redraw()
+	// user can navigate 
+	// title -> generating -(escape) -> title
+	// title -> generation -> play -(escape)-> title
+	// title -> generation -> play -> finish -> title
+	// STATE_PLAY is the main state where the user can navigate through the maze in a first person view
+	static final int STATE_TITLE = 1;
+	static final int STATE_GENERATING = 2;
+	static final int STATE_PLAY = 3;
+	static final int STATE_FINISH = 4;
+	
+	private int percentdone = 0; // describes progress during generation phase
+	private boolean showMaze;		 	// toggle switch to show overall maze on screen
+	private boolean showSolution;		// toggle switch to show solution in overall maze on screen
+	private boolean solving;			// toggle switch 
+
+	final int viewz = 50;    
+	int viewx, viewy, ang;
+	int dx, dy;  // current direction
+	int px, py ; // current position on maze grid (x,y)
+	int walk_step;
+	int view_dx, view_dy; // current view direction
+
+
+	// debug stuff
+	boolean deepdebug = false;
+	boolean all_visible = false;
+	boolean new_game = false;
+
+	int mazew; // width of maze
+	int mazeh; // height of maze
+	// grid for maze
+	Cells mazecells ;
+	int[][] mazedists;
+	Cells seencells ;
+	BSPNode bsp;
+
+	public boolean map_mode; // true: display map of maze, false: do not display map of maze
+	// map_mode is toggled by user keyboard input, causes a call to draw_map during play mode
+	//int map_scale; relocated to mapdrawer
+
+	// MapDrawer to perform drawing of maps
+	MapDrawer mapdrawer ;
+	// Drawer to get the first person perspective
+	FirstPersonDrawer firstpersondrawer ;
+	// Mazebuilder is used to calculate a new maze together with a solution
+	// The maze is computed in a separate thread. It is started in the local Build method.
+	// The calculation communicates back by calling the local newMaze() method.
+	public MazeBuilder mazebuilder;
+
+
+	
+	// The user picks a skill level between 0 - 9, a-f 
+	// The following arrays transform this into corresponding dimensions for the result maze as well as the number of rooms and parts
+	static int skill_x[] =     { 4, 12, 15, 20, 25, 25, 35, 35, 40, 60,
+		70, 80, 90, 110, 150, 300 };
+	static int skill_y[] =     { 4, 12, 15, 15, 20, 25, 25, 35, 40, 60,
+		70, 75, 75,  90, 120, 240 };
+	static int skill_rooms[] = { 0,  2,  2,  3,  4,  5, 10, 10, 20, 45,
+		45, 50, 50,  60,  80, 160 };
+	static int skill_partct[] = { 60,
+		600, 900, 1200,
+		2100, 2700, 3300,
+		5000, 6000, 13500,
+		19800, 25000, 29000,
+		45000, 85000, 85000*4 };
+
+	// fixing a value matching the escape key
+	final int ESCAPE = 27;
+
+	// generation method used to compute a maze
+	int method = 0 ; // 0 : default method, Falstad's original code
+	
+	// method == 1: Prim's algorithm
+	
+	Thread thread;
+	
+	/**
+	 * Constructor
+	 */
+	public Maze() {
+		super() ;
+
+	}
+	/**
+	 * Constructor that also selects a particular generation method
+	 */
+	public Maze(int method)
+	{
+		// 0 is default, do not accept other settings but 0 and 1
+		if (1 == method)
+		this.method = 1 ;
+	}
+
+	/**
+	 * Call back method for MazeBuilder to communicate newly generated maze as reaction to a call to build()
+	 * @param root node for traversals, used for the first person perspective
+	 * @param cells encodes the maze with its walls and border
+	 * @param dists encodes the solution by providing distances to the exit for each position in the maze
+	 * @param startx current position, x coordinate
+	 * @param starty current position, y coordinate
+	 */
+	public void newMaze(BSPNode root, Cells c, int dists[][], int startx, int starty) {
+		if (getKeyListeners().length < 1)
+			addKeyListener((KeyListener) mo);
+		if (Cells.deepdebugWall)
+		{   // for debugging: dump the sequence of all deleted walls to a log file
+			// This reveals how the maze was generated
+			c.saveLogFile(Cells.deepedebugWallFileName);
+		}
+		bsp = root;
+		showMaze = showSolution = solving = false;
+		mazecells = c ;
+		mazedists = dists;
+		seencells = new Cells(mazew+1,mazeh+1) ;
+		//bsp_root = root; // delegated to firstpersondrawer
+		setCurrentDirection(1, 0) ;
+		setCurrentPosition(startx,starty) ;
+		walk_step = 0;
+		view_dx = dx<<16; 
+		view_dy = dy<<16;
+		ang = 0;
+		map_mode = false;
+		// mazew and mazeh have been set in build() method before mazebuider was called to generate a new maze.
+		// reset map_scale in mapdrawer to a value of 10
+		mapdrawer = new MapDrawer(view_width,view_height,map_unit,step_size, mazecells, seencells, 10, mazedists, mazew, mazeh) ;
+		
+		firstpersondrawer = new FirstPersonDrawer(view_width,view_height,map_unit,step_size, mazecells, seencells, 10, mazedists, mazew, mazeh, root) ;
+		// set the current state for the state-dependent behavior
+		//if (!mazebuilder.interrupt){
+			state = STATE_PLAY;
+		// graphics update
+			redraw();
+		// the next line is needed because we're in a separate thread;
+		// we can't seem to do a real paint in this thread, so tell
+		// the main thread to do it.
+			repaint();}
+		
+	//}
+
+	
+	public void setCurrentPosition(int x, int y)
+	{
+		px = x ;
+		py = y ;
+	}
+	public void setCurrentDirection(int x, int y)
+	{
+		dx = x ;
+		dy = y ;
+	}
+	
+	
+	void buildInterrupted() {
+		//mazebuilder.Interrupt();
+		mazebuilder.buildThread.interrupt();
+		state = STATE_TITLE;
+		redraw();
+		mazebuilder = null;
+	}
+
+	final double radify(int x) {
+		return x*Math.PI/180;
+	}
+
+
+
+	/**
+	 * Updates graphical output on screen, called from MazeBuilder
+	 */
+	public void redraw() {
+		gw.gc = buffer_img.getGraphics();
+		gc = buffer_img.getGraphics();
+		switch (state) {
+		case STATE_TITLE:
+			redrawTitle(gc);
+			break;
+		case STATE_GENERATING:
+			
+			redrawGenerating(gc);
+			break;
+		case STATE_PLAY:
+			redrawPlay(gc);
+			break;
+		case STATE_FINISH:
+			redrawFinish(gc);
+			removeKeyListener((KeyListener) mo);
+			break;
+		}
+		update(getGraphics());
+	}
+
+	private void centerString(Graphics gc, FontMetrics fm, String str, int ypos) {
+		gc.drawString(str, (view_width-fm.stringWidth(str))/2, ypos);
+	}
+
+	/**
+	 * Helper method for redraw to draw the title screen, screen is hardcoded
+	 * @param gw.gc graphics handler to manipulate screen
+	 */
+	private void redrawTitle(Graphics gc2) {
+
+	/**
+	 * Adds the proper buttons to the proper panels for the title screen and adds listeners to keep track of mouse clicks on the buttons.
+	 * There is also a check to make sure only one listener has been added for each button.  The RadioListener records the player's choice for maze
+	 * type.  For example,  when the silly  player picks Kruskal's Maze, method is changed to 2 (thus causing maze to use MazeBuilderKruskal).  
+	 * Generate and generateListener are used to keep an eye on the sliderbar which indicates the skill level.  KingOfTHEListeners basically covers the rest of the buttons
+	 * (load, save, terminate, showMap,...you get the point enough).   KingOfTHEfListeners will be touched in further detail when I feel like it.
+	 * 
+	 */
+		allThePanels.setLayout(new BorderLayout());
+		Generate generateListener = new Generate(this, difficulty.getValue());
+		generatePanel.add(generateButton);
+		
+		radioButtons.add(orignialMazeButton);
+		radioButtons.add(primsMazeButton);
+		radioButtons.add(kruskalsMazeButton);
+		
+		typeMazePanel.add(orignialMazeButton);
+		typeMazePanel.add(primsMazeButton);
+		typeMazePanel.add(kruskalsMazeButton);
+
+		allThePanels.removeAll();
+		loadPanel.removeAll();
+		loadPanel.add(loadButton) ;
+
+
+		loadPanel.add(saveButton);
+		if((loadButton.getActionListeners().length < 1) && (saveButton.getActionListeners().length < 1)){
+			
+			robotdriver_select.addActionListener(new KingOfTheListeners(this));
+			saveButton.addActionListener(new KingOfTheListeners(this));
+			loadButton.addActionListener(new KingOfTheListeners(this));
+			orignialMazeButton.addActionListener(new RadioListener(this, radioButtons));
+			primsMazeButton.addActionListener(new RadioListener(this, radioButtons));
+			kruskalsMazeButton.addActionListener(new RadioListener(this, radioButtons));
+			difficulty.addChangeListener(new SkillLevelListener(generateListener, difficulty));
+			generateButton.addActionListener(generateListener);
+		}
+		loadPanel.validate();
+		loadPanel.repaint();
+		difficulty.setMajorTickSpacing(1);
+		difficulty.setPaintTicks(true);
+		difficulty.setPaintLabels(true);
+		difficulty.setFont(font);
+		sliderPanel.add(difficulty);
+		allThePanels.add(robotdriver_select, BorderLayout.WEST);
+		allThePanels.add(generatePanel, BorderLayout.NORTH);
+		allThePanels.add(sliderPanel, BorderLayout.CENTER);
+		allThePanels.add(typeMazePanel, BorderLayout.SOUTH);
+		allThePanels.validate();
+		allThePanels.repaint();
+		
+		gc2.setColor(Color.white);
+		gc2.fillRect(0, 0, view_width, view_height);
+		gc2.setFont(largeBannerFont);
+		FontMetrics fm = gc2.getFontMetrics();
+		gc2.setColor(Color.red);
+		centerString(gc2, fm, "MAZE", 100);
+		gc2.setColor(Color.blue);
+		gc2.setFont(smallBannerFont);
+		fm = gc2.getFontMetrics();
+		centerString(gc2, fm, "by Paul Falstad", 160);
+		centerString(gc2, fm, "www.falstad.com", 190);
+		gc2.setColor(Color.black);
+		centerString(gc2, fm, "To start, select a skill level.", 250);
+		//centerString(gw.gc, fm, "(Press a number from 0 to 9,", 300);
+		//centerString(gw.gc, fm, "or a letter from A to F)", 320);
+		centerString(gc2, fm, "v1.2", 350);
+	}
+
+
+
+
+	/**
+	 * Helper method for redraw to draw final screen, screen is hard coded
+	 * @param gw.gc graphics handler to manipulate screen
+	 */
+	private void redrawFinish(Graphics gc2) {
+		
+		/**
+		 * Resets allThePanels permitting us to ensure that ShowMap, ShowSolution, and Solve Maze are no longer displayed.
+		 * Ensures that the terminate button is displayed alongside return to title button on the finish screen.  Hoorah!
+		 */
+		allThePanels.removeAll();
+		allThePanels.validate();
+		loadPanel.add(terminate);
+		loadPanel.validate();
+		if (terminate.getActionListeners().length < 1)
+			terminate.addActionListener(new KingOfTheListeners(this));
+	
+		
+		gc2.setColor(Color.blue);
+		gc2.fillRect(0, 0, view_width, view_height);
+		gc2.setFont(largeBannerFont);
+		FontMetrics fm = gc2.getFontMetrics();
+		gc2.setColor(Color.yellow);
+		centerString(gc, fm, "You won!", 100);
+		gc2.setColor(Color.orange);
+		gc2.setFont(smallBannerFont);
+		fm = gc2.getFontMetrics();
+		centerString(gc, fm, "Congratulations!", 160);
+
+		centerString(gc, fm, "The robot's battery life is: " + (2500-mo.getEnergyConsumption()), 220);
+		centerString(gc, fm, "The robot's length of path: " + mo.getPathLength(), 260);
+		
+		gc2.setColor(Color.white);
+		//centerString(gc, fm, "Hit any key to restart", 300);
+	}
+
+	/**
+	 * Helper method for redraw to draw screen during phase of maze generation, screen is hard coded
+	 * only attribute percentdone is dynamic
+	 * @param gw2 graphics handler to manipulate screen
+	 */
+	private void redrawGenerating(Graphics gw2) { 
+		
+		gw2.setColor(Color.yellow);
+		gw2.fillRect(0, 0, view_width, view_height);
+		gw2.setFont(largeBannerFont);
+		FontMetrics fm = gw2.getFontMetrics();
+		gw2.setColor(Color.red);
+		centerString(gw2, fm, "Building maze", 150);
+		gw2.setFont(smallBannerFont);
+		fm = gw2.getFontMetrics();
+		gw2.setColor(Color.black);
+		//centerString(gw.gc, fm, percentdone+"% completed", 200);
+		//centerString(gw.gc, fm, "Hit escape to stop", 300);
+		
+	}
+
+	/**
+	 * Allows external increase to percentage in generating mode with subsequence graphics update
+	 * @param pc gives the new percentage on a range [0,100]
+	 * @return true if percentage was updated, false otherwise
+	 * 
+	 */
+	
+
+	public boolean increasePercentage(int pc) {
+		/**
+		 * Updates the progessBar and makes it pretty with COLORS! :)
+		 */
+		if (percentdone < pc && pc < 100) {
+			percentdone = pc;
+			if (state == STATE_GENERATING)
+			{	
+				if (percentdone%10 == 0){
+					
+					progressBar.setForeground(Color.getHSBColor(percentdone/16.0f, 0.5f, 0.5f)) ;
+				}
+				progressBar.setValue(percentdone + 5);
+
+					
+				progressBar.setString((percentdone) + "%");
+				allThePanels.validate();
+				redraw();
+				repaint();
+				
+			}
+			return true ;
+		}
+		return false ;
+	}
+	/**
+	 * Helper method for redraw to draw screen during the game. If map_mode is true, i.e. the user wants to see the overall map,
+	 * the map is drawn only on a small rectangle inside the maze area. The current position is located is centered such that 
+	 * it may happen that only a part of the map fits the display and is thus visible.
+	 * @param gw.gc graphics handler to manipulate screen
+	 */
+	private void redrawPlay(Graphics gc2) {
+		/**
+		 * Resets allThPanels and loadPanel.  We wish to make sure that only the following buttons are displayed for your pleasure:
+		 * Stop(Return to Title), ToggleMap, SolveMaze, Solution.
+		 * 
+		 */
+
+		allThePanels.removeAll();
+		allThePanels.add(toggleMap, BorderLayout.WEST);
+		allThePanels.add(solution, BorderLayout.EAST);
+		allThePanels.add(solveMaze, BorderLayout.CENTER);
+		loadPanel.removeAll();
+		loadPanel.add(stop);
+		//stop.addActionListener(this);
+		if (stop.getActionListeners().length < 1) {
+			stop.addActionListener(new KingOfTheListeners(this));
+			//addKeyListener(mo);
+		}
+		loadPanel.validate();
+		loadPanel.repaint();
+		if (toggleMap.getActionListeners().length < 1){
+			toggleMap.addActionListener(new KingOfTheListeners(this));
+			solution.addActionListener(new KingOfTheListeners(this));
+			solveMaze.addActionListener(new KingOfTheListeners(this));}
+		allThePanels.validate();
+		allThePanels.repaint();
+		
+		firstpersondrawer.redrawPlay(gw, px, py, view_dx, view_dy, walk_step, view_offset, rset, ang) ;
+		
+		if (map_mode) {
+			mapdrawer.draw_map(gw, px, py, walk_step, view_dx, view_dy, showMaze, showSolution) ;
+			mapdrawer.draw_currentlocation(gw, view_dx, view_dy) ;
+		}
+	}
+	
+
+	/**
+	 * overwrites Applet method, called in redraw()
+	 */
+	public void update(Graphics g) {
+		paint(g) ;
+		if (solving)
+			solveStep();
+	} 
+
+	/**
+	 * overwrites Applet method
+	 */
+	public void paint(Graphics g) {
+		g.drawImage(buffer_img, 0, 0, this);
+	}
+
+	/////////////////////// Methods for debugging ////////////////////////////////
+	protected void dbg(String str) {
+		System.out.println(str);
+	}
+
+	private void logPosition() {
+		if (!deepdebug)
+			return;
+		dbg("x="+viewx/map_unit+" ("+
+				viewx+") y="+viewy/map_unit+" ("+viewy+") ang="+
+				ang+" dx="+dx+" dy="+dy+" "+view_dx+" "+view_dy);
+	}
+	///////////////////////////////////////////////////////////////////////////////
+
+	/**
+	 * Helper method for walk()
+	 * @param dir
+	 * @return true if there is no wall in this direction
+	 */
+	private boolean checkMove(int dir) {
+		// obtain appropriate index for direction (CW_BOT, CW_TOP ...) 
+		// for given direction parameter
+		int a = ang/90;
+		if (dir == -1)
+			a = (a+2) & 3; // TODO: check why this works
+		// check if cell has walls in this direction
+		// returns true if there are no walls in this direction
+		int[] masks = Cells.getMasks() ;
+		return mazecells.hasMaskedBitsFalse(px, py, masks[a]) ;
+	}
+
+
+
+	private void rotateStep() {
+		ang = (ang+1800) % 360;
+		view_dx = (int) (Math.cos(radify(ang))*(1<<16));
+		view_dy = (int) (Math.sin(radify(ang))*(1<<16));
+		moveStep();
+	}
+
+	private void moveStep() {
+		redraw();
+		try {
+			Thread.currentThread().sleep(25);
+		} catch (Exception e) { }
+	}
+
+	private void rotateFinish() {
+		setCurrentDirection((int) Math.cos(radify(ang)), (int) Math.sin(radify(ang))) ;
+		logPosition();
+	}
+
+	private void walkFinish(int dir) {
+		setCurrentPosition(px + dir*dx, py + dir*dy) ;
+		
+		if (isEndPosition(px,py)) {
+			state = STATE_FINISH;
+			redraw();
+		}
+		walk_step = 0;
+		logPosition();
+	}
+
+	/**
+	 * checks if the given position is outside the maze
+	 * @param x
+	 * @param y
+	 * @return true if position is outside, false otherwise
+	 */
+	protected boolean isEndPosition(int x, int y) {
+		return x < 0 || y < 0 || x >= mazew || y >= mazeh;
+	}
+
+
+
+	synchronized protected void walk(int dir) {
+		if (!checkMove(dir))
+			return;
+		for (int step = 0; step != 4; step++) {
+			walk_step += dir;
+			moveStep();
+		}
+		walkFinish(dir);
+	}
+
+	synchronized protected void rotate(int dir) {
+		int origang = ang;
+		int steps = 4;
+
+		for (int step = 0; step != steps; step++) {
+			ang = origang + dir*(90*(step+1))/steps;
+			rotateStep();
+		}
+		rotateFinish();
+	}
+
+	/**
+	 * Helper method for solveStep
+	 * @param n
+	 */
+	protected void rotateTo(int n) {
+		int a = ang/90;
+		if (n == a)
+			;
+		else if (n == ((a+2) & 3)) {
+			rotate(1);
+			rotate(1);
+		} else if (n == ((a+1) & 3)) {
+			rotate(1);
+		} else
+			rotate(-1);
+	}
+
+	/**
+	 * Method is only called in update() method (which serves redraw())
+	 */
+	//Changed to protected!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+	synchronized protected void solveStep() {
+		solving = false;
+		int d = mazedists[px][py];
+		gw.gc.setColor(Color.yellow);
+		// case 1: we are not directly next to the final position
+		if (d > 1) {
+			int n = getDirectionIndexTowardsSolution(px,py,d);
+			if (n == 4)
+				dbg("HELP!");
+			rotateTo(n);
+			walk(1);
+			repaint(25);
+			solving = true;
+			return;
+		}
+		// case 2: we are one step close to the final position
+		int n;
+		int[] masks = Cells.getMasks() ;
+		for (n = 0; n < 4; n++) {
+			// skip this direction if there is a wall or border
+			if (mazecells.hasMaskedBitsGTZero(px, py, masks[n]))
+				continue;
+			// stop if position in this direction is end position
+			if (isEndPosition(px+MazeBuilder.dirsx[n], py+MazeBuilder.dirsy[n]))
+				break ;
+		}
+		rotateTo(n);
+		walk(1);
+	}
+
+
+	protected int getDirectionIndexTowardsSolution(int x, int y, int d) {
+		int[] masks = Cells.getMasks() ;
+		for (int n = 0; n < 4; n++) {
+			if (mazecells.hasMaskedBitsTrue(x,y,masks[n]))
+				continue;
+				int dx = MazeBuilder.dirsx[n];
+				int dy = MazeBuilder.dirsy[n];
+				int dn = mazedists[x+dx][y+dy];
+				if (dn < d)
+					return n ;
+		}
+		return 4 ;
+	}
+
+	/**
+	 * Method incorporates all reactions to keyboard input in original code, 
+	 * after refactoring, Java Applet and Java Application wrapper call this method to communicate input.
+	 */
+	public boolean keyDown(Event evt, int key) {
+		switch (state) {
+		// if screen shows title page, keys describe level of expertise
+		// create a maze according to the user's selected level
+		case STATE_TITLE:
+			if (key >= '0' && key <= '9') {
+				build(key - '0');
+				break;
+			}
+			if (key >= 'a' && key <= 'f') {
+				build(key - 'a' + 10);
+				break;
+			}
+			break;
+		// if we are currently generating a maze, recognize interrupt signal (ESCAPE key)
+		// to stop generation of current maze
+		case STATE_GENERATING:
+			if (key == ESCAPE) {
+				mazebuilder.Interrupt();
+				buildInterrupted();
+			}
+			break;
+		// if user explores maze, 
+		// react to input for directions and interrupt signal (ESCAPE key)	
+		// react to input for displaying a map of the current path or of the overall maze (on/off toggle switch)
+		// react to input to display solution (on/off toggle switch)
+		// react to input to increase/reduce map scale
+		case STATE_PLAY:
+			switch (key) {
+			case Event.UP: case 'k': case '8':
+				walk(1);
+				break;
+			case Event.LEFT: case 'h': case '4':
+				rotate(1);
+				break;
+			case Event.RIGHT: case 'l': case '6':
+				rotate(-1);
+				break;
+			case Event.DOWN: case 'j': case '2':
+				walk(-1);
+				break;
+			case ESCAPE: case 65385:
+				if (solving)
+					solving = false;
+				else
+					state = STATE_TITLE;
+				redraw();
+				break;
+			case ('w' & 0x1f): 
+			{ 
+				setCurrentPosition(px + dx, py + dy) ;
+				redraw(); 
+				break;
+			}
+			case '\t': case 'm':
+				map_mode = !map_mode; redraw(); break;
+			case 'z':
+				showMaze = !showMaze; redraw(); break;
+			case 's':
+				showSolution = !showSolution;
+				redraw(); 
+				break;
+			case ('s' & 0x1f):
+				if (solving)
+					solving = false;
+				else {
+					solving = true;
+					repaint(25);
+				}
+			break;
+			case '+': case '=':
+			{
+				if (mapdrawer != null)
+				{
+					mapdrawer.incrementMapScale() ;
+					redraw() ;
+				}
+				// else ignore
+				break ;
+			}
+			case '-':
+				if (mapdrawer != null)
+				{
+					mapdrawer.decrementMapScale() ;
+					redraw() ;
+				}
+				// else ignore
+				break ;
+			}
+			break;
+		// if we are finished, return to initial state with title screen	
+		case STATE_FINISH:
+			state = STATE_TITLE;
+			redraw();
+			break;
+		} 
+		return true;
+	}
+
+
+	public void init() {
+
+		state = STATE_TITLE;
+		buffer_img = createImage(view_width, view_height);
+		if (null == buffer_img)
+		{
+			//System.out.println("Error: creation of buffered image failed, presumedly container not displayable");
+		}
+		rset = new RangeSet();
+		largeBannerFont = new Font("TimesRoman", Font.BOLD, 48);
+		smallBannerFont = new Font("TimesRoman", Font.BOLD, 16);
+		// force MazeBuilder to load; if we load it later, it takes
+		// FOREVER, using Netscape 2.0b5 on Windows NT
+		
+		//MazeBuilder mbjunk = new MazeBuilder(); The original one.
+		/*
+		MazeBuilder mbjunk = new MazeBuilderPrim();
+		FloatPair fpjunk = new FloatPair(0.0, 0.0);
+		RangePair rpjunk = new RangePair(0, 0, 0, 0);
+		Seg sgjunk = new Seg(0, 0, 0, 0, 0, 0);
+		RangeSetElement rsejunk = new RangeSetElement(0, 0);
+		*/
+	}
+
+	public void start() {
+		redraw();
+	}
+
+	/**
+	 * Method obtains a new Mazebuilder and has it compute new maze, 
+	 * it is only used in keyDown()
+	 * @param skill level determines the width, height and number of rooms for the new maze
+	 */
+	
+	public void build(int skill) {
+		/**
+		 * Resets the loadPanel and AllthePanels and then adds stop (return to title) and the progressbar to the generating screen.  ProgressBar is initialized to 
+		 * 0% and the color set to CYAN. 
+		 */
+		// switch screen
+		state = STATE_GENERATING;
+		loadPanel.removeAll();
+		loadPanel.add(stop);
+		if (stop.getActionListeners().length < 1)
+			stop.addActionListener(new KingOfTheListeners(this));
+		loadPanel.validate();
+		loadPanel.repaint();
+		allThePanels.removeAll();
+		allThePanels.validate();
+		allThePanels.repaint();
+		
+		allThePanels.add(progressBar, BorderLayout.PAGE_START);
+		percentdone = 0;
+		progressBar.setStringPainted(true);
+		progressBar.setForeground(Color.CYAN);
+		progressBar.setFont(percent);
+		progressBar.setString("0%");
+
+		Robot walle = new BasicRobot(this); 
+		try {
+			mo.setRobot(walle);
+		} catch (UnsuitableRobotException e1) {
+			// TODO Auto-generated catch block
+			e1.printStackTrace();
+		}
+		redraw();
+		
+		
+		// select generation method
+		switch(method){
+		case 2: mazebuilder = new MazeBuilderKruskal(); //generate with Kruskal's algorithm
+		break;
+		case 1 : mazebuilder = new MazeBuilderPrim(); // generate with Prim's algorithm
+		break ;
+		case 0: // generate with Falstad's original algorithm (0 and default), note the missing break statement
+		default : mazebuilder = new MazeBuilder(); 
+		break ;
+		}
+		// adjust settings and launch generation in a separate thread
+		mazew = skill_x[skill];
+		mazeh = skill_y[skill];
+		int roomcount = skill_rooms[skill];
+		mazebuilder.build(this, mazew, mazeh, roomcount, skill_partct[skill]);
+		
+
+		
+	}
+	
+	private class KingOfTheListeners implements ActionListener{
+		/**A mighty king that hangs high upon his throne.  He doth command the load and save button to function properly.  They are required upon his royal request
+		 * to open a dialog for thine user to...use.  These two brave buttons must be compatible for any user (will always lead to the data folder).  If King's words
+		 * rings false then we shall string(more like *char) them up and hang 'em high.  Also a join is used to make sure the Maze is finished for save before we actually
+		 * use MazeFileWriter.
+		 * 
+		 * We then have the lovely wenches: ShowMap, Show Solution, and Solve Maze.  They call upon their men (KeyEvents) to perform the proper, and most desired
+		 * effect.  Also, there is the terminate button, but really that is self-explanatory (it terminates the PROGRAM).
+		 * 
+		 * 
+		 */
+		private Maze parent;
+		
+		public KingOfTheListeners(Maze parent){
+			this.parent = parent;
+		}
+		
+		public void actionPerformed(ActionEvent e) {
+			if ( e.getSource() == loadButton )
+			{    
+
+				//Create a file chooser
+				String workingdir = System.getProperty("user.dir");
+				System.out.println(workingdir);
+				final JFileChooser fc = new JFileChooser(workingdir +"/data");
+				// open a file selection dialog
+				int returnVal = fc.showOpenDialog(parent);
+
+				if (returnVal == JFileChooser.APPROVE_OPTION) {
+
+					File f = fc.getSelectedFile();
+					//This is where a real application would open the file.
+					System.out.println("Opening: " + f.getName() + ".");
+					if (f.exists() && f.canRead())
+					{	
+						String file_string= "";
+						try {
+							file_string = f.getCanonicalPath();
+						} catch (IOException e1) {
+							// TODO Auto-generated catch block
+							e1.printStackTrace();
+						}
+						System.out.println("MazeApplication: loading maze from file: "  + file_string );
+						init();
+						MazeFileReader mfr = new MazeFileReader(file_string) ;
+						
+						mazeh = mfr.getHeight() ;
+						mazew = mfr.getWidth() ;
+						newMaze(mfr.getRootNode(),mfr.getCells(),mfr.getDistances(),mfr.getStartX(), mfr.getStartY()) ;
+					}
+				}
+			}
+			
+			else if(e.getSource() == saveButton){
+				
+				String workingdir = System.getProperty("user.dir");
+				final JFileChooser fc = new JFileChooser(workingdir +"/data");
+				// open a file selection dialog
+				parent.build(Generate.level);
+				int returnVal = fc.showSaveDialog(null);
+				MazeFileWriter writer = new MazeFileWriter( );
+				if (returnVal == JFileChooser.APPROVE_OPTION) {
+					File f = fc.getSelectedFile();
+					System.out.println(f.getName());
+					//parent.build(Generate.level);
+					
+
+					
+					try {
+						parent.mazebuilder.buildThread.join();
+					} 
+					catch (InterruptedException e1) {
+						// TODO Auto-generated catch block
+						e1.printStackTrace();
+					}
+					
+					writer.store(workingdir +"/data/"+f.getName(), skill_x[Generate.level], skill_y[Generate.level], skill_rooms[Generate.level], skill_partct[Generate.level], bsp, mazecells, mazedists, mazebuilder.startx, mazebuilder.starty); 
+				}
+				else if (returnVal == JFileChooser.CANCEL_OPTION){
+					try {
+						parent.mazebuilder.buildThread.join();
+					} 
+					catch (InterruptedException e1) {
+						// TODO Auto-generated catch block
+						e1.printStackTrace();
+					}
+				}
+				state = STATE_TITLE;
+				redraw();
+				
+			
+			}
+			else if(e.getSource() == stop){
+				if(state == STATE_GENERATING){
+					mazebuilder.Interrupt();
+					buildInterrupted();
+				}
+				else{
+					if (solving)
+						solving = false;
+					else
+						state = STATE_TITLE;
+					redraw();
+				}
+				
+			}
+			
+			else if (e.getSource() == toggleMap){
+				keyDown(null, 109);
+				keyDown(null, 122);
+				
+			}
+			
+			else if (e.getSource() == solution){
+
+				keyDown(null, 115);
+
+			}
+			else if (e.getSource() == solveMaze){
+						try {
+							mo.drive2Exit();
+						} catch (Exception e1) {
+							// TODO Auto-generated catch block
+							e1.printStackTrace();
+						}
+
+			
+				}
+			else if(e.getSource() == robotdriver_select){
+				walle = new BasicRobot(this.parent);
+				if(robotdriver_select.getSelectedItem()=="WallFollower")
+				{	mo = new WallFollower();
+					try {
+						mo.setRobot(walle);
+					} catch (UnsuitableRobotException e1) {
+						// TODO Auto-generated catch block
+						e1.printStackTrace();
+					}
+				}
+				if(robotdriver_select.getSelectedItem() == "CuriousGambler"){
+					mo = new CuriousGambler();
+					try {
+						mo.setRobot(walle);
+				} 	catch (UnsuitableRobotException e2) {
+					// TODO Auto-generated catch block
+						e2.printStackTrace();
+				}
+				}
+				if(robotdriver_select.getSelectedItem() == "Gambler"){
+					mo = new Gambler();
+					try {
+						mo.setRobot(walle);
+					} catch (UnsuitableRobotException e2) {
+						// TODO Auto-generated catch block
+						e2.printStackTrace();
+					}
+			}
+				if(robotdriver_select.getSelectedItem()=="Wizard"){
+					mo = new Wizard(this.parent);
+					try {
+						mo.setRobot(walle);
+				} 	catch (UnsuitableRobotException e2) {
+					// TODO Auto-generated catch block
+					e2.printStackTrace();
+				}
+				}
+					
+				if(robotdriver_select.getSelectedItem()== "ManualDriver")
+				{		
+					mo = new ManualDriver();
+					try {
+						mo.setRobot(walle);
+					} catch (UnsuitableRobotException e1) {
+						// TODO Auto-generated catch block
+						e1.printStackTrace();
+					}
+			}
+			}
+			else if (e.getSource() == terminate){
+				System.exit(0);
+			}
+				
+		}
+		}
+	}
+	
+
+	
+
+
